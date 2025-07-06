@@ -1,7 +1,12 @@
+# Instalador Automático para Optimizador Windows con IA
+# Repositorio: https://github.com/mstrcerr/optimizador
+# Debe ejecutarse como administrador
+
 # Configuración
 $pythonVersion = "3.11.9"
 $ollamaVersion = "0.1.37"
 $modeloIA = "phi3:mini"
+$scriptUrl = "https://raw.githubusercontent.com/mstrcerr/optimizador/main/optimizador.py"
 
 # Verificar administrador
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -11,6 +16,16 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 
 # Configurar política de ejecución
 Set-ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
+
+# Configurar manejo de errores
+$ErrorActionPreference = 'Stop'
+trap {
+    $host.UI.RawUI.ForegroundColor = "Red"
+    Write-Host "`n[!] ERROR: $($_.Exception.Message)" 
+    Write-Host "En línea: $($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor Yellow
+    $host.UI.RawUI.ForegroundColor = "White"
+    exit 1
+}
 
 # Configurar colores
 $host.UI.RawUI.ForegroundColor = "Green"
@@ -37,19 +52,20 @@ function Install-Python {
         $wingetPath = "$env:TEMP\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
         Invoke-WebRequest -Uri $wingetUrl -OutFile $wingetPath
         Add-AppxPackage -Path $wingetPath
-        Start-Sleep -Seconds 5  # Esperar instalación
+        Start-Sleep -Seconds 5
     }
     
     Write-Host "[*] Instalando Python $pythonVersion..."
-    winget install -e --id Python.Python.${pythonVersion.Replace('.','')} --silent --accept-package-agreements
+    winget install -e --id Python.Python.3119 --silent --accept-package-agreements
+    
+    # Actualizar PATH
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
     
     if (Get-Command python -ErrorAction SilentlyContinue) {
         $host.UI.RawUI.ForegroundColor = "Green"
         Write-Host "[✓] Python instalado correctamente"
     } else {
-        $host.UI.RawUI.ForegroundColor = "Red"
-        Write-Host "[✗] Error: Falló la instalación de Python"
-        exit
+        throw "Falló la instalación de Python"
     }
 }
 
@@ -68,12 +84,11 @@ function Install-Ollama {
     $ollamaUrl = "https://ollama.com/download/OllamaSetup.exe"
     $installerPath = "$env:TEMP\OllamaSetup.exe"
     
-    # Descargar instalador
     Invoke-WebRequest -Uri $ollamaUrl -OutFile $installerPath
     
-    Write-Host "[*] Instalando Ollama..."
+    Write-Host "[*] Instalando Ollama (esto puede tomar un momento)..."
     Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
-    Start-Sleep -Seconds 10  # Esperar instalación
+    Start-Sleep -Seconds 15
     
     # Verificar instalación
     if (Test-Path "C:\Program Files\Ollama\ollama.exe") {
@@ -81,9 +96,7 @@ function Install-Ollama {
         Write-Host "[✓] Ollama instalado correctamente"
         Remove-Item $installerPath -Force
     } else {
-        $host.UI.RawUI.ForegroundColor = "Red"
-        Write-Host "[✗] Error: Falló la instalación de Ollama"
-        exit
+        throw "Falló la instalación de Ollama"
     }
 }
 
@@ -92,13 +105,17 @@ function Download-Model {
     $host.UI.RawUI.ForegroundColor = "Yellow"
     Write-Host "[*] Descargando modelo de IA ($modeloIA)..."
     
-    # Verificar si Ollama está en el PATH
+    # Añadir Ollama al PATH
     $env:Path += ";C:\Program Files\Ollama"
     
+    # Iniciar servicio Ollama
+    Start-Process -FilePath "C:\Program Files\Ollama\ollama.exe" -ArgumentList "serve" -WindowStyle Hidden
+    
+    # Descargar modelo
     Start-Process "ollama" -ArgumentList "pull $modeloIA" -WindowStyle Hidden -Wait
     
     $host.UI.RawUI.ForegroundColor = "Green"
-    Write-Host "[✓] Modelo descargado (o ya existente)"
+    Write-Host "[✓] Modelo descargado correctamente"
 }
 
 # 4. Instalar dependencias de Python
@@ -106,17 +123,30 @@ function Install-Dependencies {
     $host.UI.RawUI.ForegroundColor = "Yellow"
     Write-Host "[*] Instalando dependencias de Python..."
     
-    # Asegurar que pip está actualizado
     python -m pip install --upgrade pip
-    
-    # Instalar paquetes requeridos
-    pip install requests psutil
+    pip install requests psutil pywin32
     
     $host.UI.RawUI.ForegroundColor = "Green"
     Write-Host "[✓] Dependencias instaladas correctamente"
 }
 
-# 5. Crear acceso directo
+# 5. Descargar script optimizador
+function Download-Script {
+    $host.UI.RawUI.ForegroundColor = "Yellow"
+    Write-Host "[*] Descargando script optimizador..."
+    
+    $scriptPath = Join-Path -Path $pwd -ChildPath "optimizador.py"
+    Invoke-WebRequest -Uri $scriptUrl -OutFile $scriptPath
+    
+    if (Test-Path $scriptPath) {
+        $host.UI.RawUI.ForegroundColor = "Green"
+        Write-Host "[✓] Script descargado correctamente"
+    } else {
+        throw "No se pudo descargar el script"
+    }
+}
+
+# 6. Crear acceso directo
 function Create-Shortcut {
     $host.UI.RawUI.ForegroundColor = "Yellow"
     Write-Host "[*] Creando acceso directo..."
@@ -137,21 +167,6 @@ function Create-Shortcut {
     Write-Host "[✓] Acceso directo creado en el escritorio"
 }
 
-# 6. Iniciar servicios
-function Start-Services {
-    $host.UI.RawUI.ForegroundColor = "Yellow"
-    Write-Host "[*] Iniciando servicios en segundo plano..."
-    
-    # Detener Ollama si ya está corriendo
-    Stop-Process -Name "ollama" -Force -ErrorAction SilentlyContinue
-    
-    # Iniciar Ollama en segundo plano
-    Start-Process -FilePath "C:\Program Files\Ollama\ollama.exe" -ArgumentList "serve" -WindowStyle Hidden
-    
-    $host.UI.RawUI.ForegroundColor = "Green"
-    Write-Host "[✓] Servicios iniciados correctamente"
-}
-
 # --- Flujo principal de instalación ---
 Write-Host "Iniciando instalación..." -ForegroundColor Cyan
 
@@ -167,11 +182,11 @@ Download-Model
 # 4. Instalar dependencias de Python
 Install-Dependencies
 
-# 5. Crear acceso directo
-Create-Shortcut
+# 5. Descargar script optimizador
+Download-Script
 
-# 6. Iniciar servicios
-Start-Services
+# 6. Crear acceso directo
+Create-Shortcut
 
 # Mensaje final
 $host.UI.RawUI.ForegroundColor = "Green"
@@ -185,7 +200,7 @@ Write-Host "2. Haz doble clic para ejecutarlo"
 Write-Host ""
 Write-Host "Notas importantes:"
 Write-Host "- La primera ejecución puede tardar 1-2 minutos mientras carga el modelo"
-Write-Host "- El acceso directo ejecutará automáticamente el programa"
+Write-Host "- Debes aceptar el aviso de seguridad para ejecutar como administrador"
 Write-Host ""
 $host.UI.RawUI.ForegroundColor = "White"
 
